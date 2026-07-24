@@ -1,5 +1,5 @@
-pyttsx3
 pyperclip
 keyboard
 pystray
 Pillow
+pywin32
