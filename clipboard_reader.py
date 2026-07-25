@@ -81,6 +81,10 @@ def _worker():
             elif cmd == "settings":
                 _, rate, vi, vol = item
                 _apply(speaker, {"rate": rate, "voice": vi, "volume": vol})
+            elif cmd == "test":
+                _, rate, vi, vol = item
+                _apply(speaker, {"rate": rate, "voice": vi, "volume": vol})
+                speaker.Speak("This is a preview of the selected voice.", _PURGE_AND_ASYNC)
     finally:
         pythoncom.CoUninitialize()
 
@@ -156,6 +160,11 @@ def open_settings():
             save_settings(rate_var.get(), vi, vol_var.get())
             root.destroy()
 
+        def on_test():
+            vi = voice_names.index(voice_var.get()) if voice_var.get() in voice_names else 0
+            _q.put(("test", rate_var.get(), vi, vol_var.get()))
+
+        tk.Button(btn_frame, text="Test Voice", width=10, command=on_test).pack(side="left", padx=8)
         tk.Button(btn_frame, text="Save", width=10, command=on_save).pack(side="left", padx=8)
         tk.Button(btn_frame, text="Cancel", width=10, command=root.destroy).pack(side="left", padx=8)
 
