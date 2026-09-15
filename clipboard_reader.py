@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import queue
 import threading
@@ -13,7 +14,15 @@ from PIL import Image, ImageDraw
 from pystray import Icon, Menu, MenuItem
 
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clipboard_reader.log")
 DEFAULTS = {"rate": 150, "voice": 0, "volume": 100}
+
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s [ClipboardTTSReader] %(levelname)s: %(message)s",
+)
+logger = logging.getLogger("ClipboardTTSReader")
 
 # SAPI async flags
 _ASYNC = 1
@@ -26,7 +35,6 @@ _worker_state = {}  # populated by worker thread: "voice_names"
 def wpm_to_sapi(wpm):
     """Convert words-per-minute (50-300) to SAPI rate (-10 to 10)."""
     return max(-10, min(10, round((wpm - 150) / 15)))
-
 
 # --- Settings ---
 
@@ -42,6 +50,7 @@ def load_settings():
 def save_settings(rate, voice_index, volume):
     with open(SETTINGS_FILE, "w") as f:
         json.dump({"rate": rate, "voice": voice_index, "volume": volume}, f, indent=2)
+    logger.info(f"settings saved: rate={rate} voice={voice_index} volume={volume}")
     _q.put(("settings", rate, voice_index, volume))
 
 
@@ -68,6 +77,7 @@ def _worker():
         settings = load_settings()
         _apply(speaker, settings)
         _worker_state["ready"] = True
+        logger.info(f"SAPI worker ready ({voices.Count} voice(s) available)")
 
         while True:
             item = _q.get()
@@ -85,8 +95,11 @@ def _worker():
                 _, rate, vi, vol = item
                 _apply(speaker, {"rate": rate, "voice": vi, "volume": vol})
                 speaker.Speak("This is a preview of the selected voice.", _PURGE_AND_ASYNC)
+    except Exception:
+        logger.exception("SAPI worker crashed")
     finally:
         pythoncom.CoUninitialize()
+        logger.info("SAPI worker stopped")
 
 
 # --- Speech actions ---
@@ -94,12 +107,15 @@ def _worker():
 def read_clipboard():
     text = pyperclip.paste()
     if text and text.strip():
+        logger.info(f"read_clipboard: speaking {len(text)} char(s)")
         _q.put(("speak", text))
+    else:
+        logger.info("read_clipboard: clipboard empty or whitespace, nothing to speak")
 
 
 def stop_reading():
+    logger.info("stop_reading: stop requested")
     _q.put(("stop",))
-
 
 # --- Tray icon ---
 
@@ -172,35 +188,48 @@ def open_settings():
 
     threading.Thread(target=_run_dialog, daemon=True).start()
 
-
 # --- Main ---
 
 def main():
-    worker = threading.Thread(target=_worker, daemon=True)
-    worker.start()
+    logger.info("=== ClipboardTTSReader starting ===")
+    try:
+        worker = threading.Thread(target=_worker, daemon=True)
+        worker.start()
 
-    # Wait for SAPI to be ready before registering hotkeys
-    while not _worker_state.get("ready"):
-        threading.Event().wait(0.05)
+        # Wait for SAPI to be ready before registering hotkeys
+        while not _worker_state.get("ready"):
+            threading.Event().wait(0.05)
 
-    keyboard.add_hotkey("shift+`", read_clipboard)
-    keyboard.add_hotkey("shift+esc", stop_reading)
+        # NOTE: "shift+`" is not used here because the `keyboard` library resolves
+        # printable-character hotkeys against the CURRENTLY ACTIVE Windows keyboard
+        # layout. This machine has both English (US) and Hebrew layouts installed
+        # (HKCU\Keyboard Layout\Preload: 00000409, 0000040d); when Hebrew is active,
+        # no scancode produces "`" and add_hotkey raises ValueError, crashing on
+        # startup. Named/virtual-key hotkeys (F-keys, Esc, modifiers) are layout-
+        # independent and don't have this problem, so we use those instead.
+        keyboard.add_hotkey("shift+f9", read_clipboard)
+        keyboard.add_hotkey("shift+esc", stop_reading)
+        logger.info("hotkeys registered: Shift+F9 = read clipboard, Shift+Esc = stop")
 
-    menu = Menu(
-        MenuItem("Read Clipboard  (Shift+`)", lambda icon, item: read_clipboard()),
-        MenuItem("Stop  (Shift+Esc)", lambda icon, item: stop_reading()),
-        Menu.SEPARATOR,
-        MenuItem("Settings", lambda icon, item: open_settings()),
-        Menu.SEPARATOR,
-        MenuItem("Exit", lambda icon, item: icon.stop()),
-    )
+        menu = Menu(
+            MenuItem("Read Clipboard  (Shift+F9)", lambda icon, item: read_clipboard()),
+            MenuItem("Stop  (Shift+Esc)", lambda icon, item: stop_reading()),
+            Menu.SEPARATOR,
+            MenuItem("Settings", lambda icon, item: open_settings()),
+            Menu.SEPARATOR,
+            MenuItem("Exit", lambda icon, item: icon.stop()),
+        )
 
-    tray = Icon("ClipboardReader", create_icon(), "Clipboard TTS Reader", menu)
-    tray.run()
+        tray = Icon("ClipboardReader", create_icon(), "Clipboard TTS Reader", menu)
+        tray.run()
 
-    # Cleanup
-    keyboard.unhook_all_hotkeys()
-    _q.put(None)
+        # Cleanup
+        keyboard.unhook_all_hotkeys()
+        _q.put(None)
+        logger.info("=== ClipboardTTSReader exiting normally ===")
+    except Exception:
+        logger.exception("ClipboardTTSReader crashed")
+        raise
 
 
 if __name__ == "__main__":
